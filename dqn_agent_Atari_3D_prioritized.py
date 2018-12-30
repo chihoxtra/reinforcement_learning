@@ -9,15 +9,17 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 BUFFER_SIZE = int(1e5)        # replay buffer size
-BATCH_SIZE = 32               # minibatch size
+BATCH_SIZE = 128              # minibatch size
 REPLAY_MIN_SIZE = int(5e3)    # min len of memory before replay start
 GAMMA = 0.99                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
-LR = 2.5e-4                   # learning rate
+LR = 1e-3                     # learning rate #25e4
 UPDATE_EVERY = 4              # how often to update the network
+DECAY_STEP = int(5e4)         # how many steps before another decay: priority-> random
+DECAY_GAMMA = 0.9995          # LR decay by how much
 TD_ERROR_EPS = 1e-7           # make sure TD error is not zero
-PRIORITY_DISCOUNT = 0.7       # balance between prioritized and random sampling
-SAMPLING_BIAS = 0.5           # adjustment on weight update
+PRIORITY_DISCOUNT = 0.9       # balance between prioritized and random sampling #0.7
+SAMPLING_BIAS = 0.8           # adjustment on weight update #0.5
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -40,18 +42,26 @@ class Agent():
         # Q-Network
         self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)
         self.qnetwork_target = QNetwork(state_size, action_size, seed).to(device)
-        self.optimizer = optim.RMSprop(self.qnetwork_local.parameters(), lr=LR)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
 
         # Replay memory
-        self.memory = ReplayBuffer(action_size, BUFFER_SIZE,
-                                   BATCH_SIZE, PRIORITY_DISCOUNT, seed)
-        # Initialize time step (for updating every UPDATE_EVERY steps)
+        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed)
+
+        # Keep track of repeated actions
+        self.last_actions = deque(maxlen=10)
+
+        # Initialize time step (for updating every UPDATE_EVERY steps and others)
         self.t_step = 0
+
+        # object reference to constant values:
+        self.priority_disc = PRIORITY_DISCOUNT
+        self.sampling_bias = SAMPLING_BIAS
         print("current device: {}".format(device))
 
 
     def get_TD_values(self, local_net, target_net, s, a, r, ns, d, isLearning=False):
 
+        ns, s = ns.float(), s.float()
         with torch.no_grad(): #for sure no grad for this part
             #print(type(ns))
             ns_target_vals = target_net(ns.float().to(device))
@@ -99,12 +109,25 @@ class Agent():
         # store the abs magnitude of td error, add eps to make sure it is non-zero
         td_error = torch.abs(td_target - td_current).cpu().numpy() + TD_ERROR_EPS
 
+        td_error = td_error ** self.priority_disc #power to discount
+
         # Save experience in replay memory
         self.memory.add(state, action, reward, next_state, done, td_error)
 
         # Learn every UPDATE_EVERY time steps.
-        self.t_step = (self.t_step + 1) % UPDATE_EVERY
-        if self.t_step == 0:
+        self.t_step += 1
+
+        if self.t_step % DECAY_STEP == 0:
+            self.optimizer.state_dict()['param_groups'][0]['lr'] *= DECAY_GAMMA
+            self.priority_disc *= DECAY_GAMMA
+            self.sampling_bias *= DECAY_GAMMA
+
+            latest_lr = self.optimizer.state_dict()['param_groups'][0]['lr']
+            print("decay applied: lr: {}, p: {}, b: {}".format(latest_lr,
+                                                               self.priority_disc,
+                                                               self.sampling_bias))
+
+        if self.t_step % UPDATE_EVERY == 0:
             # If enough samples are available in memory, get random subset and learn
             if len(self.memory) > REPLAY_MIN_SIZE:
                 experiences, sampling_adj = self.memory.sample()
@@ -127,10 +150,14 @@ class Agent():
 
         # Epsilon-greedy action selection
         if random.random() > eps:
-            return np.argmax(action_values.cpu().data.numpy())
+            action =  np.argmax(action_values.cpu().data.numpy())
         else:
-            return random.choice(np.arange(self.action_size))
+            action = random.choice(np.arange(self.action_size))
 
+        self.last_actions.append(action)
+        if len(self.last_actions) == 10 and np.sum(self.last_actions) == 0:
+            print('all zeros!')
+        return action
 
     def learn(self, experiences, sampling_adj, gamma, sampling_bias):
         """Update value parameters using given batch of experience tuples.
@@ -153,7 +180,7 @@ class Agent():
 
         # adjust the loss for sampling bias by priority
         reduced_adj = torch.from_numpy(np.array(sampling_adj)).float()
-        adjusted_loss = loss * (reduced_adj ** sampling_bias)
+        adjusted_loss = loss * (reduced_adj ** self.sampling_bias)
 
         self.optimizer.zero_grad()
         adjusted_loss.backward()
@@ -181,7 +208,7 @@ class Agent():
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, action_size, buffer_size, batch_size, priority_discount, seed):
+    def __init__(self, action_size, buffer_size, batch_size, seed):
         """Initialize a ReplayBuffer object.
 
         Params
@@ -195,17 +222,14 @@ class ReplayBuffer:
         self.action_size = action_size
         self.memory = deque(maxlen=buffer_size)
         self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done", "td_error"])
-        self.p_discount = priority_discount
-        #self.df = pd.DataFrame(columns=["id", "state", "action", "reward", "next_state", "done", "td_error"])
+        self.experience = namedtuple("Experience", field_names=["state", "action",
+                                     "reward", "next_state", "done", "td_error"])
         self.seed = random.seed(seed)
-
 
     def add(self, state, action, reward, next_state, done, td_error):
         """Add a new experience to memory."""
-        td_error = td_error ** self.p_discount #power to discount
-
-        e = self.experience(np.expand_dims(state,0), action, reward, np.expand_dims(next_state,0), done, td_error)
+        e = self.experience(np.expand_dims(state,0), action, reward,
+                            np.expand_dims(next_state,0), done, td_error)
         self.memory.append(e)
 
 

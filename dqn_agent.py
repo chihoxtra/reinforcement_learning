@@ -2,7 +2,7 @@ import numpy as np
 import random
 from collections import namedtuple, deque
 
-from pacman_3d_model import QNetwork
+from gym_fc_model import QNetwork
 
 import torch
 import torch.nn.functional as F
@@ -165,7 +165,7 @@ class ReplayBuffer:
 
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
-        e = self.experience(np.expand_dims(state,0), action, reward, np.expand_dims(next_state,0), done)
+        e = self.experience(state, action, reward, next_state, done)
         self.memory.append(e)
 
     def sample(self):
