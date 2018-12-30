@@ -32,11 +32,13 @@ class QNetwork(nn.Module):
         ## output size = (W-F+2P)/S +1 = (9-3)/1 +1 = 8
         # the output Tensor will have the dimensions: (64, 7, 7)
         self.conv3 = nn.Conv2d(64, 64, 3, 1)
-        
+
         # 64 outputs * the 7*7 filtered/pooled map size
         self.fc1 = nn.Linear(64*7*7, 512)
-        
-        self.fc2 = nn.Linear(512, action_size)
+
+        self.fc2 = nn.Linear(512, 64)
+
+        self.fc3 = nn.Linear(64, action_size)
 
     def forward(self, state):
         """Build a network that maps state -> action values."""
@@ -55,8 +57,10 @@ class QNetwork(nn.Module):
 
         # one linear layer
         x = F.relu(self.fc1(x))
-        
-        x = self.fc2(x)
-        
+
+        x = F.relu(self.fc2(x))
+
+        x = self.fc3(x)
+
         # final output
         return x
