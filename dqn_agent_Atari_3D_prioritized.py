@@ -2,24 +2,29 @@ import numpy as np
 import random
 from collections import namedtuple, deque
 
-from model_Atari_3D import QNetwork
+from model_Atari_3D_duel import QNetwork
+#from model_Atari_3D import QNetwork
+#from model_fc_unity import QNetwork
 
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
 BUFFER_SIZE = int(1e5)        # replay buffer size
-BATCH_SIZE = 128              # minibatch size
-REPLAY_MIN_SIZE = int(5e3)    # min len of memory before replay start
+BATCH_SIZE = 32               # minibatch size
+REPLAY_MIN_SIZE = int(5e4)    # min len of memory before replay start
 GAMMA = 0.99                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
-LR = 1e-3                     # learning rate #25e4
-UPDATE_EVERY = 4              # how often to update the network
-DECAY_STEP = int(5e4)         # how many steps before another decay: priority-> random
+LR = 15e-4                    # learning rate #25e4
+UPDATE_EVERY = 32             # how often to update the network
+MIN_DECAY_STEP = int(5e4)     # decay start from this step
+DECAY_STEP = int(15e4)        # how many steps before another decay: priority-> random
 DECAY_GAMMA = 0.9995          # LR decay by how much
 TD_ERROR_EPS = 1e-7           # make sure TD error is not zero
-PRIORITY_DISCOUNT = 0.9       # balance between prioritized and random sampling #0.7
-SAMPLING_BIAS = 0.8           # adjustment on weight update #0.5
+PRIORITY_DISCOUNT = 0.8       # balance between prioritized and random sampling #0.7
+SAMPLING_BIAS = 0.6           # adjustment on weight update #0.5
+USE_DUEL = True               # use duel network?
+REWARD_CLIP = True            # use reward clipping?
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -40,12 +45,12 @@ class Agent():
         self.seed = random.seed(seed)
 
         # Q-Network
-        self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)
-        self.qnetwork_target = QNetwork(state_size, action_size, seed).to(device)
+        self.qnetwork_local = QNetwork(state_size, action_size, seed, USE_DUEL).to(device)
+        self.qnetwork_target = QNetwork(state_size, action_size, seed, USE_DUEL).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
 
         # Replay memory
-        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed)
+        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed, REWARD_CLIP)
 
         # Keep track of repeated actions
         self.last_actions = deque(maxlen=10)
@@ -54,8 +59,9 @@ class Agent():
         self.t_step = 0
 
         # object reference to constant values:
-        self.priority_disc = PRIORITY_DISCOUNT
+        self.p_discount = PRIORITY_DISCOUNT
         self.sampling_bias = SAMPLING_BIAS
+        self.reward_clip = REWARD_CLIP
         print("current device: {}".format(device))
 
 
@@ -107,9 +113,7 @@ class Agent():
                                                    isLearning=False)
 
         # store the abs magnitude of td error, add eps to make sure it is non-zero
-        td_error = torch.abs(td_target - td_current).cpu().numpy() + TD_ERROR_EPS
-
-        td_error = td_error ** self.priority_disc #power to discount
+        td_error = torch.abs(td_target - td_current).cpu().numpy()
 
         # Save experience in replay memory
         self.memory.add(state, action, reward, next_state, done, td_error)
@@ -117,21 +121,26 @@ class Agent():
         # Learn every UPDATE_EVERY time steps.
         self.t_step += 1
 
-        if self.t_step % DECAY_STEP == 0:
-            self.optimizer.state_dict()['param_groups'][0]['lr'] *= DECAY_GAMMA
-            self.priority_disc *= DECAY_GAMMA
+        # decay only starts after certain threshold
+        if self.t_step > MIN_DECAY_STEP and self.t_step % DECAY_STEP == 0:
+            #self.optimizer.state_dict()['param_groups'][0]['lr'] *= DECAY_GAMMA
+            self.p_discount *= DECAY_GAMMA
             self.sampling_bias *= DECAY_GAMMA
 
             latest_lr = self.optimizer.state_dict()['param_groups'][0]['lr']
-            print("decay applied: lr: {}, p: {}, b: {}".format(latest_lr,
-                                                               self.priority_disc,
+            print("\rdecay applied: lr: {:.4f}, p: {:.4f}, b: {:.4f}\r".format(latest_lr,
+                                                               self.p_discount,
                                                                self.sampling_bias))
 
+        # If enough samples are available in memory, get random subset and learn
+        if len(self.memory) > REPLAY_MIN_SIZE:
+            experiences, sampling_adj = self.memory.sample(self.p_discount,
+                                                           TD_ERROR_EPS)
+            self.learn(experiences, sampling_adj, GAMMA, SAMPLING_BIAS)
+
         if self.t_step % UPDATE_EVERY == 0:
-            # If enough samples are available in memory, get random subset and learn
-            if len(self.memory) > REPLAY_MIN_SIZE:
-                experiences, sampling_adj = self.memory.sample()
-                self.learn(experiences, sampling_adj, GAMMA, SAMPLING_BIAS)
+            # ------------------- update target network ------------------- #
+            self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)
 
 
     def act(self, state, eps=0.):
@@ -154,9 +163,11 @@ class Agent():
         else:
             action = random.choice(np.arange(self.action_size))
 
-        self.last_actions.append(action)
-        if len(self.last_actions) == 10 and np.sum(self.last_actions) == 0:
-            print('all zeros!')
+        # try to avoid too many zeros actions
+        if len(self.last_actions) == 10 and np.sum(self.last_actions) == 0 and action == 0:
+            action = random.choice(np.arange(self.action_size))
+            print('\rall zeros!\r')
+
         return action
 
     def learn(self, experiences, sampling_adj, gamma, sampling_bias):
@@ -188,7 +199,7 @@ class Agent():
         self.optimizer.step()
 
         # ------------------- update target network ------------------- #
-        self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)
+        #self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)
 
 
     def soft_update(self, local_model, target_model, tau):
@@ -208,7 +219,7 @@ class Agent():
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, action_size, buffer_size, batch_size, seed):
+    def __init__(self, action_size, buffer_size, batch_size, seed, reward_clip=False):
         """Initialize a ReplayBuffer object.
 
         Params
@@ -225,19 +236,22 @@ class ReplayBuffer:
         self.experience = namedtuple("Experience", field_names=["state", "action",
                                      "reward", "next_state", "done", "td_error"])
         self.seed = random.seed(seed)
+        self.reward_clip = reward_clip
 
     def add(self, state, action, reward, next_state, done, td_error):
         """Add a new experience to memory."""
+        if self.reward_clip:
+            reward = max(min(reward, 1.0), -1.0) #reward clipping
+
         e = self.experience(np.expand_dims(state,0), action, reward,
                             np.expand_dims(next_state,0), done, td_error)
         self.memory.append(e)
 
-
-    def sample(self):
+    def sample(self, p_discount,td_eps):
         """Sample a batch of experiences from memory."""
         #experiences = random.sample(self.memory, k=self.batch_size)
-
         td_list = np.array([e[5] for e in self.memory]) # a list of td_error
+        td_list = (td_list ** p_discount) + td_eps #apply discount factor and make sure not zero
 
         p_dist = td_list/np.sum(td_list) #normalized probability
         p_dist = p_dist.squeeze() #p_dist is a 1D array
