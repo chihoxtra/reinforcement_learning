@@ -2,7 +2,7 @@ import numpy as np
 import random
 from collections import namedtuple, deque
 
-from model_Atari_3D_duel import QNetwork
+from model_Atari_3D_prioritized_duel import QNetwork
 #from model_Atari_3D import QNetwork
 #from model_fc_unity import QNetwork
 
@@ -12,19 +12,20 @@ import torch.optim as optim
 
 BUFFER_SIZE = int(1e5)        # replay buffer size
 BATCH_SIZE = 32               # minibatch size
-REPLAY_MIN_SIZE = int(5e4)    # min len of memory before replay start
+REPLAY_MIN_SIZE = int(5e3)    # min len of memory before replay start
 GAMMA = 0.99                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
-LR = 15e-4                    # learning rate #25e4
-UPDATE_EVERY = 32             # how often to update the network
-MIN_DECAY_STEP = int(5e4)     # decay start from this step
-DECAY_STEP = int(15e4)        # how many steps before another decay: priority-> random
+LR = 1e-4                     # learning rate #25e4
+UPDATE_EVERY = 16             # how often to update the network
+MIN_DECAY_STEP = int(1e5)     # decay start from this step
+DECAY_STEP = int(1e4)         # how many steps before another decay: priority-> random
 DECAY_GAMMA = 0.9995          # LR decay by how much
-TD_ERROR_EPS = 1e-7           # make sure TD error is not zero
+TD_ERROR_EPS = 1e-5           # make sure TD error is not zero
 PRIORITY_DISCOUNT = 0.8       # balance between prioritized and random sampling #0.7
 SAMPLING_BIAS = 0.6           # adjustment on weight update #0.5
 USE_DUEL = True               # use duel network?
 REWARD_CLIP = True            # use reward clipping?
+ERROR_CLIP = False            # clip error
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -62,6 +63,7 @@ class Agent():
         self.p_discount = PRIORITY_DISCOUNT
         self.sampling_bias = SAMPLING_BIAS
         self.reward_clip = REWARD_CLIP
+        self.error_clip = ERROR_CLIP
         print("current device: {}".format(device))
 
 
@@ -127,11 +129,6 @@ class Agent():
             self.p_discount *= DECAY_GAMMA
             self.sampling_bias *= DECAY_GAMMA
 
-            latest_lr = self.optimizer.state_dict()['param_groups'][0]['lr']
-            print("\rdecay applied: lr: {:.4f}, p: {:.4f}, b: {:.4f}\r".format(latest_lr,
-                                                               self.p_discount,
-                                                               self.sampling_bias))
-
         # If enough samples are available in memory, get random subset and learn
         if len(self.memory) > REPLAY_MIN_SIZE:
             experiences, sampling_adj = self.memory.sample(self.p_discount,
@@ -187,7 +184,13 @@ class Agent():
                                                      dones,
                                                      isLearning=True)
 
-        loss = F.mse_loss(td_currents, td_targets).to(device) #element wise
+
+        if self.error_clip: #error clipping
+            td_error = td_targets - td_currents
+            td_error_clipped = td_error.clamp(min=-1,max=-1)
+            loss = (td_error_clipped**2).mean()
+        else:
+            loss = F.mse_loss(td_currents, td_targets).to(device) #element wise
 
         # adjust the loss for sampling bias by priority
         reduced_adj = torch.from_numpy(np.array(sampling_adj)).float()
@@ -241,7 +244,8 @@ class ReplayBuffer:
     def add(self, state, action, reward, next_state, done, td_error):
         """Add a new experience to memory."""
         if self.reward_clip:
-            reward = max(min(reward, 1.0), -1.0) #reward clipping
+            reward = reward/10.0 #reward clipping
+            #reward = max(min(reward, 1.0), -1.0) #reward clipping
 
         e = self.experience(np.expand_dims(state,0), action, reward,
                             np.expand_dims(next_state,0), done, td_error)

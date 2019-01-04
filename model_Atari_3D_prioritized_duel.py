@@ -38,9 +38,9 @@ class QNetwork(nn.Module):
         # for actions
         self.fc1a = nn.Linear(64*7*7, 128)
 
-        self.fc2a = nn.Linear(128, 128)
+        self.fc2a = nn.Linear(128, 64)
 
-        self.fc3a = nn.Linear(128, action_size)
+        self.fc3a = nn.Linear(64, action_size)
 
 
         # for state values
@@ -81,7 +81,7 @@ class QNetwork(nn.Module):
 
             a_adj = a - a.mean()
 
-            out = v - a_adj
+            out = v + a_adj
         else:
             out = a
 
