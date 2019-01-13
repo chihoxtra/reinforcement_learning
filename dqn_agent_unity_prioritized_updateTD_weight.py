@@ -13,21 +13,21 @@ from model_fc_unity import QNetwork
 This version updated with TD error updates and corrected weight adjustment
 """
 
-BUFFER_SIZE = int(1e5)        # replay buffer size #int(1e6)
-BATCH_SIZE = 128              # minibatch size
+BUFFER_SIZE = int(1e6)        # replay buffer size #int(1e6)
+BATCH_SIZE = 64               # minibatch size
 REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start int(1e5)
 GAMMA = 0.95                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
 LR = 2e-4                     # learning rate #25e4
-UPDATE_EVERY = int(1e3)       # how often to update the network int(1e4)
-TD_ERROR_EPS = 1e-5           # make sure TD error is not zero
+UPDATE_EVERY = 16             # how often to update the network int(1e4)
+TD_ERROR_EPS = 1e-4           # make sure TD error is not zero
 P_REPLAY_ALPHA = 0.7          # balance between prioritized and random sampling #0.7
 INIT_P_REPLAY_BETA = 0.5      # adjustment on weight update #0.5
 #LEARNING_LOOP = 2            # no of learning cycle before the next episode
 USE_DUEL = True               # use duel network? V and A?
 USE_DOUBLE = True             # use double network to select TD value?
 REWARD_SCALE = False          # use reward clipping?
-ERROR_CLIP = False            # clip error
+ERROR_CLIP = True             # clip error
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -56,7 +56,7 @@ class Agent():
         # Q-Network
         self.qnetwork_local = QNetwork(state_size, action_size, seed, USE_DUEL).to(device)
         self.qnetwork_target = QNetwork(state_size, action_size, seed, USE_DUEL).to(device)
-        self.optimizer = optim.RMSprop(self.qnetwork_local.parameters(), lr=LR)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
 
         # Replay memory
         self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed,
