@@ -17,6 +17,7 @@ class QNetwork(nn.Module):
         self.seed = torch.manual_seed(seed)
         self.duel = duel
 
+        ###################### COMMON NETWORK CNN ###################
         # input size: 4 x 84 x 84
 
         # conv layer 1:
@@ -34,19 +35,23 @@ class QNetwork(nn.Module):
         # the output Tensor will have the dimensions: (64, 7, 7)
         self.conv3 = nn.Conv2d(64, 64, 3, 1)
 
+        ################### END OF COMMON NETWORK CNN #################
+
+        ################# ACTION  #################
+
         # 64 outputs * the 7*7 filtered/pooled map size
         # for actions
-        self.fc1a = nn.Linear(64*7*7, 128)
+        self.fc1a = nn.Linear(64*7*7, 512)
 
-        self.fc2a = nn.Linear(128, 64)
+        #self.fc2a = nn.Linear(128, 32)
 
-        self.fc3a = nn.Linear(64, action_size)
+        self.fc3a = nn.Linear(512, action_size)
 
-
+        ################# VALUE  #################
         # for state values
-        self.fc1v = nn.Linear(64*7*7, 128)
+        self.fc1v = nn.Linear(64*7*7, 512)
 
-        self.fc3v = nn.Linear(128, 1)
+        self.fc3v = nn.Linear(512, 1)
 
 
     def forward(self, state):
@@ -68,7 +73,7 @@ class QNetwork(nn.Module):
         # one linear layer
         a = F.relu(self.fc1a(conv_out))
 
-        a = F.relu(self.fc2a(a))
+        #a = F.relu(self.fc2a(a))
 
         a = self.fc3a(a)
 
