@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import copy
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -10,15 +11,21 @@ from collections import namedtuple, deque
 from model_fc_unity import QNetwork
 
 """
-This version updated with TD error updates and corrected weight adjustment
+This version is relatively more stable:
+- TD error prioritized replay
+- double and dual network
+- TD error update and weight adjustment
+- added error clipping
+- used deque rotation instead of indexing for quicker update
+- added memory index for quicker calculation
 """
 
 BUFFER_SIZE = int(1e5)        # replay buffer size #int(1e6)
-BATCH_SIZE = 256              # minibatch size
+BATCH_SIZE = 128              # minibatch size
 REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start int(1e5)
 GAMMA = 0.95                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
-LR = 1e-3                     # learning rate #25e4
+LR = 1e-2                     # learning rate #25e4
 UPDATE_EVERY = int(1e2)       # how often to update the network int(1e4)
 TD_ERROR_EPS = 1e-4           # make sure TD error is not zero
 P_REPLAY_ALPHA = 0.7          # balance between prioritized and random sampling #0.7
@@ -59,17 +66,17 @@ class Agent():
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
 
         # Replay memory
-        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed,
+        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, TD_ERROR_EPS, seed,
                                    P_REPLAY_ALPHA, REWARD_SCALE, ERROR_CLIP)
 
         # Keep track of repeated actions
         self.last_actions = deque(maxlen=10)
 
-        # Initialize time step (for updating every UPDATE_EVERY steps and others)
-        self.t_step = 0
-
         # keep track on whether training has started
         self.isTraining = False
+
+        # Initialize time step (for updating every UPDATE_EVERY steps and others)
+        self.t_step = 0
 
         print("current device: {}".format(device))
         print("use duel network (a and v): {}".format(USE_DUEL))
@@ -77,8 +84,10 @@ class Agent():
         print("use reward scaling: {}".format(REWARD_SCALE))
         print("use error clipping: {}".format(ERROR_CLIP))
         print("buffer size: {}".format(BUFFER_SIZE))
+        print("batch size: {}".format(BATCH_SIZE))
         print("min replay size: {}".format(REPLAY_MIN_SIZE))
         print("target network update: {}".format(UPDATE_EVERY))
+        print("optimizer: {}".format(self.optimizer))
 
     def get_TD_values(self, local_net, target_net, s, a, r, ns, d, isLearning=False):
 
@@ -153,17 +162,18 @@ class Agent():
         self.t_step += 1
 
         # gradually increase beta to 1 until end of epoche
-        self.p_replay_beta = INIT_P_REPLAY_BETA+((1-INIT_P_REPLAY_BETA)/ep_progress[1])*ep_progress[0]
+        if self.isTraining:
+            self.p_replay_beta = INIT_P_REPLAY_BETA+((1-INIT_P_REPLAY_BETA)/ep_progress[1])*ep_progress[0]
 
         # If enough samples are available in memory, get random subset and learn
         if len(self.memory) >= REPLAY_MIN_SIZE:
+            # training starts!
             if self.isTraining == False:
                 print("training starts!                            \r")
                 self.isTraining = True
 
-            experiences, weight, ind = self.memory.sample(self.p_replay_beta,
-                                                          TD_ERROR_EPS)
-            #for i in range(LEARNING_LOOP):
+            experiences, weight, ind = self.memory.sample(self.p_replay_beta)
+
             self.learn(experiences, weight, ind, GAMMA)
 
             if self.t_step % UPDATE_EVERY == 0:
@@ -247,27 +257,33 @@ class Agent():
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, action_size, buffer_size, batch_size, seed,
+    def __init__(self, buffer_size, batch_size, td_eps, seed,
                  p_replay_alpha, reward_scale=False, error_clip=False):
         """Initialize a ReplayBuffer object.
 
         Params
         ======
-            action_size (int): dimension of each action
             buffer_size (int): maximum size of buffer
             batch_size (int): size of each training batch
-            priority_factor (float): discount factor for priority sampling
+            td_eps: (float): to avoid zero td_error
+            p_replay_alpha (float): discount factor for priority sampling
+            reward_scale (flag): to scale reward down by 10
+            error_clip (flag): max error to 1
             seed (int): random seed
         """
-        self.action_size = action_size
         self.memory = deque(maxlen=buffer_size)
         self.batch_size = batch_size
+        self.buffer_size = buffer_size
+        self.td_eps = td_eps
         self.experience = namedtuple("Experience", field_names=["state", "action",
                                      "reward", "next_state", "done", "td_error"])
         self.seed = random.seed(seed)
         self.p_replay_alpha = p_replay_alpha
         self.reward_scale = reward_scale
         self.error_clip = error_clip
+
+        self.memory_index = np.zeros([self.buffer_size,1]) #for quicker calculation
+        self.memory_pointer = 0
 
     def add(self, state, action, reward, next_state, done, td_error):
         """Add a new experience to memory."""
@@ -281,22 +297,34 @@ class ReplayBuffer:
             td_error = np.clip(td_error, -1.0, 1.0)
 
         # apply alpha power
-        td_error = td_error ** self.p_replay_alpha
+        td_error = (td_error ** self.p_replay_alpha) + self.td_eps
 
         e = self.experience(np.expand_dims(state,0), action, reward,
                             np.expand_dims(next_state,0), done, td_error)
         self.memory.append(e)
 
-    def update(self, td_errors, index):
-        """ update the td error values while restoring orders"""
-        #td_errors = td_errors.squeeze()
-        original_len = len(self.memory)
+        ### memory index ###
+        if self.memory_pointer >= self.buffer_size:
+            #self.memory_pointer = 0
+            self.memory_index = np.roll(self.memory_index, -1)
+            self.memory_index[-1] = td_error #fifo
+        else:
+            self.memory_index[self.memory_pointer] = td_error
+            self.memory_pointer += 1
+
+    def update(self, abs_td_err, index):
+        """
+        update the td error values while restoring orders
+        abs_td_err: np.array of shape 1,batch_size,1
+        """
+        abs_td_err = abs_td_err.squeeze() #64,
+        #tmp_memory = copy.deepcopy(self.memory)
 
         for i in range(len(index)):
             self.memory.rotate(-index[i]) # move the target index to the front
             e = self.memory.popleft()
             #print(e.td_error - td_errors[:,i,:]) #see if we are getting closer
-            td_updated = td_errors[:,i,:]
+            td_updated = abs_td_err[i].reshape(1,1)
 
             #error clipping
             if self.error_clip: #error clipping
@@ -304,35 +332,60 @@ class ReplayBuffer:
                 #td_updated = td_updated.clamp(min=-1,max=-1)
 
             # apply alpha power
-            td_updated = td_updated ** self.p_replay_alpha
+            td_updated = (td_updated ** self.p_replay_alpha) + self.td_eps
 
             e_update = self.experience(e.state, e.action, e.reward,
                                        e.next_state, e.done, td_updated)
 
             self.memory.appendleft(e_update) #append the new update
             self.memory.rotate(index[i]) #restore the original order
-            assert(self.memory[index[i]].td_error == td_updated) # make sure its updated
 
-        assert(original_len == len(self.memory))
+            ### memory index ###
+            self.memory_index[index[i]] = td_updated
 
 
-    def sample(self, p_replay_beta, td_eps):
+            #assert(self.memory[index[i]].td_error == td_updated) # make sure its updated
+        #### Checking ####
+        #for i in range(len(self.memory)):
+        #    assert(self.memory_index[i] == self.memory[i].td_error)
+        #    if i in index:
+        #        if tmp_memory[i].td_error == self.memory[i].td_error:
+        #            print("error")
+        #    else:
+        #        if tmp_memory[i].td_error != self.memory[i].td_error:
+        #            print("error")
+        #    print("checking done!")
+
+
+    def sample(self, p_replay_beta):
         """Sample a batch of experiences from memory."""
         #experiences = random.sample(self.memory, k=self.batch_size)
-        td_err_list = np.array([e.td_error for e in self.memory]) # a list of td_error
+        #td_err_list = np.array([e.td_error for e in self.memory]) # a list of td_error
+        #print(np.sum(td_err_list) - np.sum(self.memory_index))
 
-        td_err_list = td_err_list + td_eps #apply discount factor and make sure not zero
+        #p_dist = td_err_list/np.sum(td_err_list) #normalized probability
+        #p_dist = p_dist.squeeze() #p_dist is a 1D array
+        l = len(self.memory)
+        p_dist = (self.memory_index[:l]/np.sum(self.memory_index[:l])).squeeze()
 
-        p_dist = td_err_list/np.sum(td_err_list) #normalized probability
-        p_dist = p_dist.squeeze() #p_dist is a 1D array
-
-        assert((np.sum(p_dist) - 1) <  1e-4)
+        assert(np.abs(np.sum(p_dist) - 1) <  1e-5)
         assert(len(p_dist) == len(self.memory))
 
         # get sample of index from the p distribution
         sample_ind = np.random.choice(len(self.memory), self.batch_size, p=p_dist)
 
-        experiences = [self.memory[i] for i in sample_ind]
+        #experiences = [self.memory[i] for i in sample_ind]
+
+        experiences = [] #faster to avoid indexing
+        #checking tmp_memory = copy.deepcopy(self.memory)
+        for i in sample_ind:
+            self.memory.rotate(-i)
+            experiences.append(self.memory[0])
+            self.memory.rotate(i)
+        #### checking ####
+        # for i in range(len(tmp_memory)):
+        #    assert(tmp_memory[i].td_error == self.memory[i].td_error)
+
 
         states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
         actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(device)
@@ -341,16 +394,14 @@ class ReplayBuffer:
         dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
 
         # for weight update adjustment
-        selected_td_p = [p_dist[i] for i in sample_ind] #the prob of selected e
+        selected_td_p = p_dist[sample_ind] #the prob of selected e
         # checker: the mean of selected TD errors should be greater than the mean of overall TD errors
         #print(np.mean([e.td_error for e in experiences]), np.mean([e.td_error for e in self.memory]))
 
-        adjustment = 1./np.array(selected_td_p) * 1./len(self.memory)
-        adjustment = torch.from_numpy(np.array(adjustment)).float() #change form
-        weight = adjustment ** p_replay_beta #apply power
-        normalizer = weight.max() #get the max
-        weight =  weight/normalizer #normalizer by max weight
-        weight = weight.mean() #cause backward prop can take only a scalar
+        weight = (np.array(selected_td_p) * l) ** -p_replay_beta
+        weight =  weight/np.max(weight) #normalizer by max
+        weight = np.mean(weight) #cause backward prop can take only a scalar
+        weight = torch.from_numpy(np.array(weight)).float() #change form
         assert(weight.requires_grad == False)
 
         return (states, actions, rewards, next_states, dones), weight, sample_ind

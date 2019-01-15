@@ -22,7 +22,7 @@ This version is relatively more stable:
 
 BUFFER_SIZE = int(2e5)        # replay buffer size
 BATCH_SIZE = 64               # minibatch size
-REPLAY_MIN_SIZE = int(1e4)    # min len of memory before replay start #int(5e3)
+REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start #int(5e3)
 GAMMA = 0.99                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
 LR = 2.0e-4                   # learning rate #25e4
@@ -34,7 +34,7 @@ INIT_P_REPLAY_BETA = 0.5      # adjustment on weight update #0.5
 USE_DUEL = True               # use duel network? V and A?
 USE_DOUBLE = True             # use double network to select TD value?
 REWARD_SCALE = False          # use reward clipping?
-ERROR_CLIP = False            # clip error
+ERROR_CLIP = True             # clip error
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -84,6 +84,7 @@ class Agent():
         print("use reward scaling: {}".format(REWARD_SCALE))
         print("use error clipping: {}".format(ERROR_CLIP))
         print("buffer size: {}".format(BUFFER_SIZE))
+        print("batch size: {}".format(BATCH_SIZE))
         print("min replay size: {}".format(REPLAY_MIN_SIZE))
         print("target network update: {}".format(UPDATE_EVERY))
         print("optimizer: {}".format(self.optimizer))
