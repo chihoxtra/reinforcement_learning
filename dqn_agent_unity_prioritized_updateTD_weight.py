@@ -21,12 +21,12 @@ This version is relatively more stable:
 """
 
 BUFFER_SIZE = int(1e5)        # replay buffer size #int(1e6)
-BATCH_SIZE = 128              # minibatch size
+BATCH_SIZE = 256              # minibatch size
 REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start int(1e5)
 GAMMA = 0.95                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
-LR = 1e-2                     # learning rate #25e4
-UPDATE_EVERY = int(1e2)       # how often to update the network int(1e4)
+LR = 2e-3                     # learning rate #25e4
+UPDATE_EVERY = int(5e3)       # how often to update the network int(1e4)
 TD_ERROR_EPS = 1e-4           # make sure TD error is not zero
 P_REPLAY_ALPHA = 0.7          # balance between prioritized and random sampling #0.7
 INIT_P_REPLAY_BETA = 0.5      # adjustment on weight update #0.5

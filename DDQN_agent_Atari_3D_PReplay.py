@@ -369,10 +369,10 @@ class ReplayBuffer:
         p_dist = (self.memory_index[:l]/np.sum(self.memory_index[:l])).squeeze()
 
         assert(np.abs(np.sum(p_dist) - 1) <  1e-5)
-        assert(len(p_dist) == len(self.memory))
+        assert(len(p_dist) == l)
 
         # get sample of index from the p distribution
-        sample_ind = np.random.choice(len(self.memory), self.batch_size, p=p_dist)
+        sample_ind = np.random.choice(l, self.batch_size, p=p_dist)
 
         #experiences = [self.memory[i] for i in sample_ind]
 
