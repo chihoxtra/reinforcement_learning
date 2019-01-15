@@ -20,9 +20,9 @@ This version is relatively more stable:
 - added memory index for quicker calculation
 """
 
-BUFFER_SIZE = int(1e3)        # replay buffer size
+BUFFER_SIZE = int(2e5)        # replay buffer size
 BATCH_SIZE = 64               # minibatch size
-REPLAY_MIN_SIZE = int(1e3)    # min len of memory before replay start #int(5e3)
+REPLAY_MIN_SIZE = int(1e4)    # min len of memory before replay start #int(5e3)
 GAMMA = 0.99                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
 LR = 2.0e-4                   # learning rate #25e4
@@ -364,7 +364,8 @@ class ReplayBuffer:
 
         #p_dist = td_err_list/np.sum(td_err_list) #normalized probability
         #p_dist = p_dist.squeeze() #p_dist is a 1D array
-        p_dist = (self.memory_index/np.sum(self.memory_index)).squeeze()
+        l = len(self.memory)
+        p_dist = (self.memory_index[:l]/np.sum(self.memory_index[:l])).squeeze()
 
         assert(np.abs(np.sum(p_dist) - 1) <  1e-5)
         assert(len(p_dist) == len(self.memory))
@@ -396,7 +397,7 @@ class ReplayBuffer:
         # checker: the mean of selected TD errors should be greater than the mean of overall TD errors
         #print(np.mean([e.td_error for e in experiences]), np.mean([e.td_error for e in self.memory]))
 
-        weight = (np.array(selected_td_p) * len(self.memory)) ** -p_replay_beta
+        weight = (np.array(selected_td_p) * l) ** -p_replay_beta
         weight =  weight/np.max(weight) #normalizer by max
         weight = np.mean(weight) #cause backward prop can take only a scalar
         weight = torch.from_numpy(np.array(weight)).float() #change form
