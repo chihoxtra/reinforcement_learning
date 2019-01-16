@@ -323,8 +323,7 @@ class ReplayBuffer:
         td_updated = (td_updated ** self.p_replay_alpha) + self.td_eps
 
         for i in range(len(index)):
-            td_updated = td_updated[i].reshape(1,1)
-            self.tree.update(index[i], priority)
+            self.tree.update(index[i], td_updated[i])
 
 
     def sample_t(self, p_replay_beta):
@@ -390,10 +389,9 @@ class ReplayBuffer:
         #p_dist = td_err_list/np.sum(td_err_list) #normalized probability
         #p_dist = p_dist.squeeze() #p_dist is a 1D array
         l = self.buffer_size
-        p_dist = self.tree.tree[-l:]/self.tree.tree[0]
+        p_dist = self.tree.tree[-l:]/np.sum(self.tree.tree[-l:])
 
         assert(np.abs(np.sum(p_dist) - 1) <  1e-5)
-
         # get sample of index from the p distribution
         sample_ind = np.random.choice(l, self.batch_size, p=p_dist)
 
@@ -402,7 +400,8 @@ class ReplayBuffer:
         experiences = [] #faster to avoid indexing
         #checking tmp_memory = copy.deepcopy(self.memory)
         for i in sample_ind:
-            experiences.append(self.tree[i])
+            index, priority, data = self.tree.get_leaf(self.tree.tree[i])
+            experiences.append(data)
 
 
         states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)

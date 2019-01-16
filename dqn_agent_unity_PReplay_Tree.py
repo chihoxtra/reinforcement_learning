@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from collections import namedtuple, deque
+from sumTree import SumTree
 
 #from model_Atari_3D_duel import QNetwork
 #from model_Atari_3D import QNetwork
@@ -20,21 +21,21 @@ This version is relatively more stable:
 - added memory index for quicker calculation
 """
 
-BUFFER_SIZE = int(1e3)        # replay buffer size #int(1e6)
-BATCH_SIZE = 32               # minibatch size
-REPLAY_MIN_SIZE = int(1e3)    # min len of memory before replay start int(1e5)
+BUFFER_SIZE = int(1e5)        # replay buffer size #int(1e6)
+BATCH_SIZE = 128              # minibatch size
+REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start int(1e5)
 GAMMA = 0.95                  # discount factor
 TAU = 1e-3                    # for soft update of target parameters
-LR = 1e-3                     # learning rate #1e-2
-UPDATE_EVERY = int(1e4)       # how often to update the network #4
-TD_ERROR_EPS = 1e-3           # make sure TD error is not zero
+LR = 1e-3                     # learning rate #25e4
+UPDATE_EVERY = int(1e5)       # how often to update the network int(1e4)
+TD_ERROR_EPS = 1e-4           # make sure TD error is not zero
 P_REPLAY_ALPHA = 0.7          # balance between prioritized and random sampling #0.7
 INIT_P_REPLAY_BETA = 0.5      # adjustment on weight update #0.5
 #LEARNING_LOOP = 2            # no of learning cycle before the next episode
 USE_DUEL = True               # use duel network? V and A?
 USE_DOUBLE = True             # use double network to select TD value?
 REWARD_SCALE = False          # use reward clipping?
-ERROR_CLIP = True             # clip error
+ERROR_CLIP = False             # clip error
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -166,11 +167,10 @@ class Agent():
             self.p_replay_beta = INIT_P_REPLAY_BETA+((1-INIT_P_REPLAY_BETA)/ep_progress[1])*ep_progress[0]
 
         # If enough samples are available in memory, get random subset and learn
-        if len(self.memory) >= REPLAY_MIN_SIZE:
+        if self.memory.tree.data_pointer == REPLAY_MIN_SIZE-1 and self.isTraining == False:
             # training starts!
-            if self.isTraining == False:
-                print("training starts!                            \r")
-                self.isTraining = True
+            print("training starts!                            \r")
+            self.isTraining = True
 
             experiences, weight, ind = self.memory.sample(self.p_replay_beta)
 
