@@ -20,7 +20,7 @@ This version is relatively more stable:
 - added memory index for quicker calculation
 """
 
-BUFFER_SIZE = int(2e5)        # replay buffer size
+BUFFER_SIZE = int(1e6)        # replay buffer size
 BATCH_SIZE = 64               # minibatch size
 REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start #int(5e3)
 GAMMA = 0.99                  # discount factor
@@ -85,6 +85,7 @@ class Agent():
         print("use error clipping: {}".format(ERROR_CLIP))
         print("buffer size: {}".format(BUFFER_SIZE))
         print("batch size: {}".format(BATCH_SIZE))
+        print("learning rate: {}".format(LR))
         print("min replay size: {}".format(REPLAY_MIN_SIZE))
         print("target network update: {}".format(UPDATE_EVERY))
         print("optimizer: {}".format(self.optimizer))
@@ -312,48 +313,50 @@ class ReplayBuffer:
             self.memory_index[self.memory_pointer] = td_error
             self.memory_pointer += 1
 
-    def update(self, abs_td_err, index):
+    def update(self, td_updated, index):
         """
         update the td error values while restoring orders
-        abs_td_err: np.array of shape 1,batch_size,1
+        td_updated: abs value; np.array of shape 1,batch_size,1
         """
-        abs_td_err = abs_td_err.squeeze() #64,
-        #tmp_memory = copy.deepcopy(self.memory)
+        td_updated = td_updated.squeeze() # (batch_size,)
+
+        #error clipping
+        if self.error_clip: #error clipping
+            td_updated = np.clip(td_updated, -1.0, 1.0)
+
+        # apply alpha power
+        td_updated = (td_updated ** self.p_replay_alpha) + self.td_eps
+
+        # checking
+        # tmp_memory = copy.deepcopy(self.memory)
 
         for i in range(len(index)):
             self.memory.rotate(-index[i]) # move the target index to the front
             e = self.memory.popleft()
-            #print(e.td_error - td_errors[:,i,:]) #see if we are getting closer
-            td_updated = abs_td_err[i].reshape(1,1)
 
-            #error clipping
-            if self.error_clip: #error clipping
-                td_updated = np.clip(td_updated, -1.0, 1.0)
-                #td_updated = td_updated.clamp(min=-1,max=-1)
+            td_i = td_updated[i].reshape(1,1)
 
-            # apply alpha power
-            td_updated = (td_updated ** self.p_replay_alpha) + self.td_eps
+            e1 = self.experience(e.state, e.action, e.reward,
+                                 e.next_state, e.done, td_i)
 
-            e_update = self.experience(e.state, e.action, e.reward,
-                                       e.next_state, e.done, td_updated)
-
-            self.memory.appendleft(e_update) #append the new update
+            self.memory.appendleft(e1) #append the new update
             self.memory.rotate(index[i]) #restore the original order
 
             ### memory index ###
-            self.memory_index[index[i]] = td_updated
+            self.memory_index[index[i]] = td_i
 
-
-            #assert(self.memory[index[i]].td_error == td_updated) # make sure its updated
+            # make sure its updated
+            # assert(self.memory[index[i]].td_error == self.memory_index[index[i]])
         #### Checking ####
         #for i in range(len(self.memory)):
         #    assert(self.memory_index[i] == self.memory[i].td_error)
         #    if i in index:
         #        if tmp_memory[i].td_error == self.memory[i].td_error:
-        #            print("error")
+        #            print("in index error")
+        #            print(type(tmp_memory[i].td_error),type(self.memory[i].td_error))
         #    else:
         #        if tmp_memory[i].td_error != self.memory[i].td_error:
-        #            print("error")
+        #            print(tmp_memory[i].td_error, self.memory[i].td_error)
         #    print("checking done!")
 
 
@@ -369,22 +372,26 @@ class ReplayBuffer:
         p_dist = (self.memory_index[:l]/np.sum(self.memory_index[:l])).squeeze()
 
         assert(np.abs(np.sum(p_dist) - 1) <  1e-5)
-        assert(len(p_dist) == l)
+        assert(len(p_dist) == len(self.memory))
 
         # get sample of index from the p distribution
-        sample_ind = np.random.choice(l, self.batch_size, p=p_dist)
+        sample_ind = np.random.choice(len(self.memory), self.batch_size, p=p_dist)
 
         #experiences = [self.memory[i] for i in sample_ind]
 
         experiences = [] #faster to avoid indexing
-        #checking tmp_memory = copy.deepcopy(self.memory)
+
+        #checking
+        #tmp_memory = copy.deepcopy(self.memory) #checking
+
         for i in sample_ind:
             self.memory.rotate(-i)
             experiences.append(self.memory[0])
             self.memory.rotate(i)
+
         #### checking ####
-        # for i in range(len(tmp_memory)):
-        #    assert(tmp_memory[i].td_error == self.memory[i].td_error)
+        #for i in range(len(tmp_memory)):
+        #    assert(tmp_memory[i].td_error == self.memory[i].td_error) #checking
 
 
         states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
@@ -396,9 +403,9 @@ class ReplayBuffer:
         # for weight update adjustment
         selected_td_p = p_dist[sample_ind] #the prob of selected e
         # checker: the mean of selected TD errors should be greater than the mean of overall TD errors
-        #print(np.mean([e.td_error for e in experiences]), np.mean([e.td_error for e in self.memory]))
+        # print(np.mean([e.td_error for e in experiences]), np.mean(self.memory_index[:l]))
 
-        weight = (np.array(selected_td_p) * l) ** -p_replay_beta
+        weight = (np.array(selected_td_p) * l/self.batch_size) ** -p_replay_beta
         weight =  weight/np.max(weight) #normalizer by max
         weight = np.mean(weight) #cause backward prop can take only a scalar
         weight = torch.from_numpy(np.array(weight)).float() #change form
